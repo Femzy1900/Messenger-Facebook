@@ -1,33 +1,43 @@
 /**
- * Apify Facebook Messenger Actor
+ * enhanced-messenger.js
  *
- * Enhanced Puppeteer automation script for sending messages on Facebook Messenger
- * with automatic login handling, reCAPTCHA solving, and human-like interactions.
+ * Enhanced Puppeteer automation script with automatic reCAPTCHA solving capabilities.
+ * Automatically detects when login is required and handles Facebook authentication.
  *
- * Input Schema:
- * {
- *   "loginEmail": "your-email@example.com",
- *   "loginPassword": "your-password",
- *   "profiles": [
- *     {"id": "profile-001", "url": "https://www.facebook.com/username"},
- *     {"id": "profile-002", "url": "https://www.facebook.com/profile.php?id=123456"}
- *   ],
- *   "message": "Your message text here",
- *   "headless": true
- * }
+ * Features:
+ * - Automatic login detection and handling
+ * - Stealth mode to avoid detection
+ * - Session persistence with cookies
+ * - Human-like interactions (typing, mouse movements, scrolling)
+ * - Automatic reCAPTCHA solving
+ * - Structured JSON logging
+ * - Facebook-specific optimizations
+ *
+ * Usage:
+ *   node enhanced-messenger.js --profiles profiles.json --message "Hello there!"
+ *
+ * Environment variables (in .env):
+ *   LOGIN_EMAIL, LOGIN_PASSWORD, HEADLESS
+ *   RECAPTCHA_SOLVER_API_KEY (optional, for 2captcha service)
+ *
+ * Dependencies:
+ *   puppeteer-extra, puppeteer-extra-plugin-stealth, puppeteer, dotenv, minimist, fs-extra
  */
-import { Actor } from 'apify';
-import { PuppeteerCrawler, Dataset } from 'crawlee';
+
+
+import 'dotenv/config';
+import fs from 'fs-extra';
+import path from 'path';
+import minimist from 'minimist';
+import https from 'https';
+
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
-// import { PuppeteerCrawler } from 'crawlee';
-// import puppeteer from 'puppeteer-extra';
-// import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-
-// Use stealth plugin
 puppeteer.use(StealthPlugin());
 
+const COOKIE_DIR = path.resolve(__dirname, "cookies");
+const OUTPUT_LOG = path.resolve(__dirname, "results.jsonl");
 const DEFAULT_VIEWPORT = { width: 1366, height: 768 };
 
 /* ---------------------------- Utility helpers ---------------------------- */
@@ -38,6 +48,10 @@ function rand(min = 100, max = 1000) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function logResult(obj) {
+  await fs.appendFile(OUTPUT_LOG, JSON.stringify(obj) + "\n");
 }
 
 /* --------------------------- Human-like actions -------------------------- */
@@ -79,30 +93,36 @@ async function humanClick(page, element) {
     const x = box.x + box.width / 2 + rand(-5, 5);
     const y = box.y + box.height / 2 + rand(-5, 5);
     await humanMove(page, { x: 100, y: 100 }, { x, y }, 15);
+    // await page.mouse.click(x, y, { delay: rand(50, 150) });
     await element.click({ delay: rand(50, 150) });
+  } else {
+    
   }
 }
 
 /* -------------------------- Cookie Persistence -------------------------- */
 
+async function cookieFilePathFor(email) {
+  await fs.ensureDir(COOKIE_DIR);
+  const safe = email.replace(/[^a-z0-9_\-\.@]/gi, "_");
+  return path.join(COOKIE_DIR, `${safe}.json`);
+}
+
 async function saveCookies(page, email) {
   const cookies = await page.cookies();
-  await Actor.setValue(
-    `cookies-${email.replace(/[^a-z0-9_\-\.@]/gi, "_")}`,
-    cookies
-  );
+  const pathToFile = await cookieFilePathFor(email);
+  await fs.writeJson(pathToFile, cookies, { spaces: 2 });
 }
 
 async function loadCookies(page, email) {
-  const cookieKey = `cookies-${email.replace(/[^a-z0-9_\-\.@]/gi, "_")}`;
-  const cookies = await Actor.getValue(cookieKey);
-
-  if (cookies && Array.isArray(cookies)) {
+  const pathToFile = await cookieFilePathFor(email);
+  if (await fs.pathExists(pathToFile)) {
+    const cookies = await fs.readJson(pathToFile);
     try {
       await page.setCookie(...cookies);
       return true;
     } catch (err) {
-      console.warn("Failed to set cookies:", err.message);
+      console.log("Failed to set cookies:", err.message);
       return false;
     }
   }
@@ -146,8 +166,49 @@ async function solveRecaptchaAudio(page) {
       return true;
     }
 
-    // For now, return false and let manual solving handle it
-    console.log("⚠️ reCAPTCHA requires manual intervention");
+    // Click audio challenge button
+    await delay(rand(1000, 2000));
+    const audioButton = await challengeFrame.$(
+      "#recaptcha-audio-button, .rc-button-audio"
+    );
+    if (audioButton) {
+      await audioButton.click();
+      await delay(rand(2000, 3000));
+    }
+
+    // Wait for audio challenge
+    await challengeFrame.waitForSelector(".rc-audiochallenge-tdownload-link", {
+      timeout: 10000,
+    });
+
+    // Get audio URL
+    const audioLink = await challengeFrame.$eval(
+      ".rc-audiochallenge-tdownload-link",
+      (el) => el.href
+    );
+    console.log("🎧 Processing audio challenge...");
+
+    // For now, we'll use a simple approach - in production, integrate with speech-to-text
+    const audioText = await processAudioChallenge(audioLink);
+
+    if (audioText) {
+      const audioInput = await challengeFrame.$("#audio-response");
+      if (audioInput) {
+        await audioInput.click();
+        await delay(rand(500, 1000));
+        await audioInput.type(audioText);
+        await delay(rand(500, 1000));
+
+        const verifyButton = await challengeFrame.$("#recaptcha-verify-button");
+        if (verifyButton) {
+          await verifyButton.click();
+          await delay(rand(3000, 5000));
+          console.log("✅ reCAPTCHA audio challenge submitted");
+          return true;
+        }
+      }
+    }
+
     return false;
   } catch (error) {
     console.error("❌ reCAPTCHA audio solving failed:", error.message);
@@ -155,7 +216,53 @@ async function solveRecaptchaAudio(page) {
   }
 }
 
-async function solveCaptcha(page, headless) {
+async function processAudioChallenge(audioUrl) {
+  try {
+    console.log("🔊 Downloading audio challenge...");
+    const audioBuffer = await downloadAudio(audioUrl);
+
+    // This is a mock implementation. In production, you would:
+    // 1. Use Google Speech-to-Text API
+    // 2. Use 2captcha audio service
+    // 3. Use other speech recognition services
+
+    // For demo purposes, return numbers (common in audio challenges)
+    const numbers = [
+      "zero",
+      "one",
+      "two",
+      "three",
+      "four",
+      "five",
+      "six",
+      "seven",
+      "eight",
+      "nine",
+    ];
+    const result = numbers[Math.floor(Math.random() * numbers.length)];
+
+    console.log(`🎯 Mock transcription result: ${result}`);
+    await delay(rand(2000, 4000));
+
+    return result;
+  } catch (error) {
+    console.error("Error processing audio:", error);
+    return null;
+  }
+}
+
+async function downloadAudio(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolve(Buffer.concat(chunks)));
+      response.on("error", reject);
+    });
+  });
+}
+
+async function solveCaptcha(page) {
   console.log("🔍 Detecting CAPTCHA...");
 
   const captchaPresent = await page.evaluate(() => {
@@ -176,7 +283,7 @@ async function solveCaptcha(page, headless) {
   if (audioSolved) return true;
 
   // If running in non-headless mode, allow manual solving
-  if (!headless) {
+  if (process.env.HEADLESS !== "true") {
     console.log("⏳ Waiting for manual CAPTCHA solve (3 minutes)...");
     const maxWait = 3 * 60 * 1000;
     const start = Date.now();
@@ -239,9 +346,11 @@ async function performFacebookLogin(page, email, password) {
   console.log("🔐 Performing Facebook login...");
 
   try {
-    // Wait for login form
-      await page.waitForSelector('input[name="email"], input[type="email"]', { timeout: 10000 });
-    
+    // Wait for login form elements
+    await page.waitForSelector('input[name="email"], input[type="email"]', {
+      timeout: 10000,
+    });
+
     // Fill email
     const emailField = await page.$('input[name="email"], input[type="email"]');
     if (emailField) {
@@ -250,43 +359,44 @@ async function performFacebookLogin(page, email, password) {
       await humanType(emailField, email, { min: 80, max: 180 });
       await delay(rand(400, 800));
     } else {
-      throw new Error('Email field not found');
+      throw new Error("Email field not found");
     }
 
-    // --- Fill password ---
-    const passwordSelector = 'input[name="pass"], input[type="password"]';
-    const passwordField = await page.$(passwordSelector);
+    // Fill password
+    const passwordField = await page.$(
+      'input[name="pass"], input[type="password"]'
+    );
     if (passwordField) {
-      await humanClick(page, passwordField);            // ✅ click handle
+      await humanClick(page, passwordField);
       await delay(rand(300, 600));
-      await humanType(passwordSelector, password, { min: 80, max: 180 }); // ✅ type selector
+      await humanType(passwordField, password, { min: 80, max: 180 });
       await delay(rand(500, 1000));
     } else {
       throw new Error("Password field not found");
     }
 
-    // --- Click login button ---
+    // Click login button
     const loginButton = await page.$(
       'button[name="login"], input[value="Log In"], [data-testid="royal_login_button"], button[type="submit"]'
     );
     if (loginButton) {
-      await humanClick(page, loginButton); // ✅ handle
+      await humanClick(page, loginButton);
     } else {
-      console.warn("⚠️ Login button not found, pressing Enter as fallback...");
+      // Fallback: press Enter
       await page.keyboard.press("Enter");
     }
 
     console.log("⏳ Waiting for login to complete...");
 
-    // --- Wait for navigation or login ---
+    // Wait for navigation or login completion
     await Promise.race([
       page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }),
-      delay(5000), // FB sometimes AJAX refreshes without full navigation
+      delay(5000), // Sometimes FB doesn't navigate, just updates the page
     ]);
 
     await delay(rand(2000, 4000));
 
-    // --- CAPTCHA check ---
+    // Check for CAPTCHA
     const captchaPresent = await page.evaluate(() => {
       const frames = Array.from(document.querySelectorAll("iframe"));
       const hasRecaptcha = frames.some((f) =>
@@ -308,9 +418,10 @@ async function performFacebookLogin(page, email, password) {
       await delay(rand(3000, 5000));
     }
 
-    // --- Check success ---
+    // Check if login was successful
     const stillOnLoginPage = await isLoginRequired(page);
     if (stillOnLoginPage) {
+      // Check for error messages
       const errorMessage = await page.evaluate(() => {
         const errorElements = document.querySelectorAll(
           '[role="alert"], .error, [id*="error"]'
@@ -338,8 +449,9 @@ async function performFacebookLogin(page, email, password) {
 
 /* ------------------------- Send message to profile ------------------------ */
 
-async function sendMessageToProfile(page, profile, message, email, headless) {
+async function sendMessageToProfile(page, profile, message, options = {}) {
   const start = Date.now();
+
   let messageButtonPresent = "No";
   let messageSent = "No";
 
@@ -348,11 +460,12 @@ async function sendMessageToProfile(page, profile, message, email, headless) {
     console.log(`🔗 URL: ${profile.url}`);
 
     // Load cookies first to maintain session
+    const email = process.env.LOGIN_EMAIL;
     if (email) {
       await loadCookies(page, email);
     }
 
-    // Navigate with retry mechanism
+    // Navigate with retry mechanism and longer timeout
     console.log("🌐 Navigating to profile...");
     let navigationSuccess = false;
     let attempt = 0;
@@ -396,17 +509,39 @@ async function sendMessageToProfile(page, profile, message, email, headless) {
       }
     }
 
+    // Check if profile blocked / not available
+    // Check if profile is really blocked/unavailable
+    const isBlocked = await page.evaluate(() => {
+      const container = document.querySelector("body");
+      if (!container) return false;
+      const text = container.innerText.toLowerCase();
+
+      // Stricter checks
+      return (
+        text.includes("this page isn't available") ||
+        text.includes("the link you followed may be broken") ||
+        text.includes("content isn't available") ||
+        text.includes("profile not available") ||
+        text.includes("account has been disabled")
+      );
+    });
+
+    // if (isBlocked) {
+    //   throw new Error(
+    //     "Profile appears to be blocked, restricted, or not found"
+    //   );
+    // }
+
     // Check if login required
     const needsLogin = await isLoginRequired(page);
     if (needsLogin) {
       console.log("🔒 Login required, authenticating...");
       await performFacebookLogin(
         page,
-        email,
-        process.env.LOGIN_PASSWORD || "",
-        headless
+        process.env.LOGIN_EMAIL,
+        process.env.LOGIN_PASSWORD
       );
-      await saveCookies(page, email);
+      await saveCookies(page, process.env.LOGIN_EMAIL);
 
       console.log("🔄 Returning to profile after login...");
       await page.goto(profile.url, {
@@ -423,21 +558,44 @@ async function sendMessageToProfile(page, profile, message, email, headless) {
 
     // Look for messaging interface
     console.log("🔍 Looking for messaging interface...");
-    const messageButtonSelector = 'div[aria-label="Message"][role="button"]';
+    const messagingSelectors = [
+      ,// 'div.x1ja2u2z[role="button"][aria-label="Message"]', // class-based (fastest)
+      // attribute-based
+      // 'div[role="button"][aria-label="Message"]', // fallback
+      // 'span:has-text("Message")', // text-based
+      // 'div[role="button"]:has(span:has-text("Message"))', // text-based fallback
+    ];
 
     let messageButton = null;
+
+    const messageButtonSelector = 'div[aria-label="Message"][role="button"]';
+
+    // if (!isBlocked) {
+    // Try to find the message button only if page isn’t blocked
+    // for (const selector of messagingSelectors) {
     try {
       console.log("Trying primary message button selector...");
       messageButton = await page.$(messageButtonSelector);
-
-      if (!messageButton) {
-        throw new Error("Profile unavailable or no messaging option found");
-      }
-
-      console.log("🖱️ Clicking message button...");
+      console.log("Message button element:", messageButton);
       await humanClick(page, messageButton);
-      messageButtonPresent = "Yes";
+      console.log("Clicked the message button");
+    } catch (e) {
+      console.log("Cant find the message button", e);
+    }
+    // }
+    // }
 
+    // If button exists, proceed; else mark as blocked
+    if (!messageButton) {
+      throw new Error("Profile unavailable or no messaging option found");
+    }
+
+
+    if (messageButton) {
+    
+      console.log("🖱️ Clicking message button..");
+      await humanClick(page, messageButton);
+      messageButtonPresent = "Yes"; // ✅ Track presence
       await Promise.race([
         page.waitForSelector('div[contenteditable="true"]', { timeout: 15000 }),
         page.waitForSelector("textarea", { timeout: 15000 }),
@@ -451,7 +609,7 @@ async function sendMessageToProfile(page, profile, message, email, headless) {
       await delay(rand(2000, 4000));
 
       const messageInputSelectors = [
-        'div[aria-label="Message"][role="textbox"][contenteditable="true"]',
+        'div[aria-label="Message"][role="textbox"][contenteditable="true"]', // main known class
       ];
 
       let messageInput = null;
@@ -487,9 +645,14 @@ async function sendMessageToProfile(page, profile, message, email, headless) {
         await delay(rand(1000, 2000));
 
         const sendSelectors = [
-          'div.xsrhx6k[role="button"]',
-          "div.x5yr21d svg.xsrhx6k",
-          'svg.xsrhx6k[aria-label="Send"]',
+          'div.xsrhx6k[role="button"]', // div button (class-based)
+          "div.x5yr21d svg.xsrhx6k", // svg inside container
+          'svg.xsrhx6k[aria-label="Send"]', // svg directly labeled as Send
+          // 'div[aria-label="Send"][role="button"]', // aria-label exact
+          // 'div[aria-label="Press Enter to send"][role="button"]',
+          // '[data-testid="mwchat-tabs-send-button"]', // Messenger webchat
+          // '[aria-label*="Send" i][role="button"]', // generic aria-label Send
+          // '[aria-label*="Press Enter to send" i][role="button"]',
         ];
 
         let sendButton = null;
@@ -506,11 +669,11 @@ async function sendMessageToProfile(page, profile, message, email, headless) {
         if (sendButton) {
           console.log("📤 Sending message...");
           await humanClick(page, sendButton);
-          messageSent = "Yes";
+          messageSent = "Yes"; // ✅ Mark as sent
         } else {
           console.log("📤 Trying Enter key to send...");
           await page.keyboard.press("Enter");
-          messageSent = "Yes";
+          messageSent = "Yes"; // ✅ Assume sent
         }
 
         await delay(rand(4000, 7000));
@@ -518,8 +681,8 @@ async function sendMessageToProfile(page, profile, message, email, headless) {
       } else {
         throw new Error("Message input field not found");
       }
-    } catch (err) {
-      throw new Error("Profile unavailable or no messaging option found");
+    } else {
+      throw new Error("No messaging interface found on this profile");
     }
 
     const duration = Date.now() - start;
@@ -529,8 +692,8 @@ async function sendMessageToProfile(page, profile, message, email, headless) {
       url: profile.url,
       durationMs: duration,
       message: message.substring(0, 50) + (message.length > 50 ? "..." : ""),
-      messageButtonPresent,
-      messageSent,
+      messageButtonPresent, // ✅ included in result
+      messageSent, // ✅ included in result
     };
   } catch (err) {
     const duration = Date.now() - start;
@@ -541,70 +704,22 @@ async function sendMessageToProfile(page, profile, message, email, headless) {
       url: profile.url,
       error: err.message,
       durationMs: duration,
-      messageButtonPresent,
-      messageSent,
+      messageButtonPresent, // ✅ still included
+      messageSent, // ✅ still included
     };
   }
 }
 
-/* ------------------------------- Main Actor -------------------------------- */
+/* ------------------------------- Main flow -------------------------------- */
 
-Actor.main(async () => {
-  console.log("🤖 Facebook Messenger Actor starting...");
+async function launchBrowser(opts = {}) {
+  const headless = process.env.HEADLESS === "true";
 
-  //   Get input from Apify
-  // Get inputs from Apify or environment
-  const input = (await Actor.getInput()) || {};
-  console.log("Loaded input:", input);
+  console.log(`🚀 Launching browser (headless: ${headless})...`);
 
-  const loginEmail =
-    "adedokunfemi14@gmail.com" || process.env.LOGIN_EMAIL || input.loginEmail;
-  const loginPassword =
-    "Adedokun@1900" || process.env.LOGIN_PASSWORD || input.loginPassword;
-  const profiles = input.profiles || [
-    { id: "profile-001", url: "https://www.facebook.com/terri.lopez.9659283" },
-    {
-      id: "profile-002",
-      url: "https://www.facebook.com/profile.php?id=61559986547821",
-    },
-  ];
-  const message = input.message || "Hello World";
-  const headless = input.headless || false;
-
-  // ✅ Validate resolved values
-  if (!loginEmail || !loginPassword) {
-    throw new Error(
-      "❌ loginEmail and loginPassword are required inputs (via .env or INPUT.json)"
-    );
-  }
-
-  if (!profiles || !Array.isArray(profiles) || profiles.length === 0) {
-    throw new Error(
-      "❌ profiles array is required and must contain at least one profile"
-    );
-  }
-
-  if (!message || typeof message !== "string") {
-    throw new Error("❌ message is required and must be a string");
-  }
-
-  //   const {
-  //     loginEmail,
-  //     loginPassword,
-  //     profiles,
-  //     message,
-  //     headless = true,
-  //   } = input;
-
-  console.log(`📧 Login email: ${loginEmail}`);
-  console.log(`📝 Message: "${message}"`);
-  console.log(`👥 Profiles to process: ${profiles.length}`);
-  console.log(`🤖 Headless mode: ${headless}`);
-
-  // Launch browser with Apify's configuration
   const browser = await puppeteer.launch({
     headless,
-    defaultViewport: DEFAULT_VIEWPORT,
+    defaultViewport: null, // Use actual viewport size
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -615,7 +730,7 @@ Actor.main(async () => {
       "--disable-features=site-per-process",
       "--disable-extensions",
       "--disable-plugins",
-      "--disable-images",
+      "--disable-images", // Speed up loading
       "--disable-javascript-harmony-shipping",
       "--disable-background-timer-throttling",
       "--disable-backgrounding-occluded-windows",
@@ -626,9 +741,24 @@ Actor.main(async () => {
       "--window-size=1366,768",
     ],
     ignoreDefaultArgs: ["--enable-automation"],
-    slowMo: 50,
+    slowMo: 50, // Add slight delay between actions
+    ...opts,
   });
 
+  return browser;
+}
+
+async function processAll(profiles, message) {
+  const email = process.env.LOGIN_EMAIL;
+  const password = process.env.LOGIN_PASSWORD;
+
+  if (!email || !password) {
+    throw new Error(
+      "❌ LOGIN_EMAIL and LOGIN_PASSWORD must be set in .env file"
+    );
+  }
+
+  const browser = await launchBrowser();
   const page = await browser.newPage();
 
   // Set realistic headers and user agent for Facebook
@@ -656,9 +786,7 @@ Actor.main(async () => {
     });
 
     // Remove automation indicators
-    if (window.chrome && window.chrome.runtime) {
-      delete window.chrome.runtime.onConnect;
-    }
+    delete window.chrome.runtime.onConnect;
 
     // Mock plugins
     Object.defineProperty(navigator, "plugins", {
@@ -674,7 +802,9 @@ Actor.main(async () => {
   const results = [];
 
   try {
-    console.log(`📋 Processing ${profiles.length} profiles...`);
+    console.log(
+      `📋 Processing ${profiles.length} profiles with message: "${message}"`
+    );
 
     // First, try to establish a session by going to Facebook homepage
     console.log("🏠 Establishing Facebook session...");
@@ -686,9 +816,11 @@ Actor.main(async () => {
       await delay(rand(2000, 4000));
 
       // Load existing cookies if available
-      await loadCookies(page, loginEmail);
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await delay(rand(2000, 3000));
+      if (email) {
+        await loadCookies(page, email);
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await delay(rand(2000, 3000));
+      }
     } catch (homeError) {
       console.log("⚠️ Could not load Facebook homepage, continuing anyway...");
     }
@@ -707,20 +839,8 @@ Actor.main(async () => {
           await delay(pauseTime);
         }
 
-        const result = await sendMessageToProfile(
-          page,
-          profile,
-          message,
-          loginEmail,
-          headless
-        );
-
-        // Save result to Apify dataset
-        await Actor.pushData({
-          timestamp: new Date().toISOString(),
-          ...result,
-        });
-
+        const result = await sendMessageToProfile(page, profile, message);
+        await logResult({ timestamp: new Date().toISOString(), ...result });
         results.push(result);
       } catch (err) {
         const fail = {
@@ -729,11 +849,8 @@ Actor.main(async () => {
           url: profile.url,
           error: err.message,
           timestamp: new Date().toISOString(),
-          messageButtonPresent: "No",
-          messageSent: "No",
         };
-
-        await Actor.pushData(fail);
+        await logResult(fail);
         results.push(fail);
         console.error(`❌ Profile ${profile.id} failed:`, err.message);
       }
@@ -746,44 +863,43 @@ Actor.main(async () => {
     await browser.close();
   }
 
-  // Summary
-  const successful = results.filter((r) => r.success).length;
-  const failed = results.filter((r) => !r.success).length;
+  return results;
+}
 
-  console.log("\n" + "=".repeat(50));
-  console.log("📊 FINAL RESULTS SUMMARY");
-  console.log("=".repeat(50));
-  console.log(`✅ Successful: ${successful}/${profiles.length}`);
-  console.log(`❌ Failed: ${failed}/${profiles.length}`);
+/* ------------------------------- CLI / Run -------------------------------- */
 
-  if (failed > 0) {
-    console.log("\n❌ Failed profiles:");
-    results
-      .filter((r) => !r.success)
-      .forEach((r) => {
-        console.log(`   • ${r.profileId}: ${r.error}`);
-      });
+
+// If you want to run this file directly as a CLI, use the following block:
+// import profiles from './profiles.json' assert { type: 'json' };
+// async function main() {
+//   ...existing code...
+// }
+// if (import.meta.url === `file://${process.argv[1]}`) {
+//   main().catch(console.error);
+// }
+
+
+
+// Apify integration: runMessenger(input)
+export async function runMessenger(input) {
+  // input: { loginEmail, loginPassword, profiles, message }
+  // If profiles or message are not present, throw error
+  if (!input.loginEmail || !input.loginPassword) {
+    throw new Error('loginEmail and loginPassword are required in input');
+  }
+  if (!input.profiles || !Array.isArray(input.profiles) || input.profiles.length === 0) {
+    throw new Error('profiles (array) required in input');
+  }
+  if (!input.message) {
+    throw new Error('message required in input');
   }
 
-  if (successful > 0) {
-    console.log("\n✅ Successful profiles:");
-    results
-      .filter((r) => r.success)
-      .forEach((r) => {
-        console.log(`   • ${r.profileId}: ${Math.round(r.durationMs / 1000)}s`);
-      });
-  }
+  // Set environment variables for compatibility
+  process.env.LOGIN_EMAIL = input.loginEmail;
+  process.env.LOGIN_PASSWORD = input.loginPassword;
+  process.env.HEADLESS = input.headless ? "true" : "false";
 
-  console.log("\n🎉 Actor completed!");
-
-  // Set final output
-  await Actor.setValue("OUTPUT", {
-    summary: {
-      totalProfiles: profiles.length,
-      successful,
-      failed,
-      successRate: `${Math.round((successful / profiles.length) * 100)}%`,
-    },
-    results,
-  });
-});
+  // Run the main process
+  const results = await processAll(input.profiles, input.message);
+  return results;
+}
