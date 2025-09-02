@@ -24,14 +24,15 @@
  *   puppeteer-extra, puppeteer-extra-plugin-stealth, puppeteer, dotenv, minimist, fs-extra
  */
 
-require("dotenv").config();
-const fs = require("fs-extra");
-const path = require("path");
-const minimist = require("minimist");
-const https = require("https");
 
-const puppeteer = require("puppeteer-extra");
-const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+import 'dotenv/config';
+import fs from 'fs-extra';
+import path from 'path';
+import minimist from 'minimist';
+import https from 'https';
+
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
 puppeteer.use(StealthPlugin());
 
@@ -867,100 +868,23 @@ async function processAll(profiles, message) {
 
 /* ------------------------------- CLI / Run -------------------------------- */
 
-async function main() {
-  console.log("🤖 Enhanced Facebook Messenger Automation Starting...\n");
 
-  const argv = minimist(process.argv.slice(2));
-  // const profilesPath = argv.profiles || argv.p || "profiles.json";
-  const profiles = require("./profiles.json");
-  const message = "Hello world! This is a test message.";
+// If you want to run this file directly as a CLI, use the following block:
+// import profiles from './profiles.json' assert { type: 'json' };
+// async function main() {
+//   ...existing code...
+// }
+// if (import.meta.url === `file://${process.argv[1]}`) {
+//   main().catch(console.error);
+// }
 
-  console.log(profiles);
-
-  if (!message) {
-    console.error(
-      '❌ Usage: node messenger.js --message "Your message here" [--profiles profiles.json]'
-    );
-    console.error(
-      '   Example: node messenger.js --message "Hello! How are you?" --profiles profiles.json'
-    );
-    process.exit(1);
-  }
-
-  try {
-    // const profiles = await fs.readJson(profilesPath);
-
-    // if (!Array.isArray(profiles) || profiles.length === 0) {
-    //   console.error(
-    //     "❌ Profiles file must contain an array of profile objects"
-    //   );
-    //   process.exit(1);
-    // }
-
-    // Validate environment variables
-    if (!process.env.LOGIN_EMAIL || !process.env.LOGIN_PASSWORD) {
-      console.error("❌ Missing required environment variables:");
-      console.error(
-        "   LOGIN_EMAIL and LOGIN_PASSWORD must be set in .env file"
-      );
-      process.exit(1);
-    }
-
-    console.log(`📧 Login email: ${process.env.LOGIN_EMAIL}`);
-    console.log(`📝 Message: "${message}"`);
-    console.log(`👥 Profiles to process: ${profiles.length}`);
-    console.log(`🤖 Headless mode: ${process.env.HEADLESS === "true"}`);
-    console.log(`📁 Results will be saved to: ${OUTPUT_LOG}\n`);
-
-    const startTime = Date.now();
-    const results = await processAll(profiles, message);
-    const totalTime = Date.now() - startTime;
-
-    // Summary
-    const successful = results.filter((r) => r.success).length;
-    const failed = results.filter((r) => !r.success).length;
-
-    console.log("\n" + "=".repeat(50));
-    console.log("📊 FINAL RESULTS SUMMARY");
-    console.log("=".repeat(50));
-    console.log(`⏱️  Total time: ${Math.round(totalTime / 1000)}s`);
-    console.log(`✅ Successful: ${successful}/${profiles.length}`);
-    console.log(`❌ Failed: ${failed}/${profiles.length}`);
-    console.log(`📁 Detailed logs: ${OUTPUT_LOG}`);
-
-    if (failed > 0) {
-      console.log("\n❌ Failed profiles:");
-      results
-        .filter((r) => !r.success)
-        .forEach((r) => {
-          console.log(`   • ${r.profileId}: ${r.error}`);
-        });
-    }
-
-    if (successful > 0) {
-      console.log("\n✅ Successful profiles:");
-      results
-        .filter((r) => r.success)
-        .forEach((r) => {
-          console.log(
-            `   • ${r.profileId}: ${Math.round(r.durationMs / 1000)}s`
-          );
-        });
-    }
-
-    console.log("\n🎉 Script completed!");
-  } catch (err) {
-    console.error("\n💥 Script failed:", err.message);
-    process.exit(1);
-  }
-}
 
 
 // Apify integration: runMessenger(input)
-async function runMessenger(input) {
+export async function runMessenger(input) {
   // input: { loginEmail, loginPassword, profiles, message }
   // If profiles or message are not present, throw error
-  if (!input.email || !input.password) {
+  if (!input.loginEmail || !input.loginPassword) {
     throw new Error('loginEmail and loginPassword are required in input');
   }
   if (!input.profiles || !Array.isArray(input.profiles) || input.profiles.length === 0) {
@@ -971,13 +895,11 @@ async function runMessenger(input) {
   }
 
   // Set environment variables for compatibility
-  process.env.LOGIN_EMAIL = input.email;
-  process.env.LOGIN_PASSWORD = input.password;
+  process.env.LOGIN_EMAIL = input.loginEmail;
+  process.env.LOGIN_PASSWORD = input.loginPassword;
   process.env.HEADLESS = input.headless ? "true" : "false";
 
   // Run the main process
   const results = await processAll(input.profiles, input.message);
   return results;
 }
-
-module.exports = { runMessenger };

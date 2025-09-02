@@ -1,6 +1,8 @@
 // main.js
+
 import { Actor } from 'apify';
-import { runMessenger } from './messenger.js';  // import your logic
+
+import { runMessenger } from './messenger.js';
 
 // Start Apify Actor
 await Actor.init();
@@ -13,10 +15,7 @@ if (!input?.loginEmail || !input?.loginPassword) {
 
 console.log("🤖 Facebook Messenger Actor starting...");
 
-// Run your main automation
-
 // Ensure input structure matches messenger.js expectations
-// input should have: loginEmail, loginPassword, profiles (array), message (string)
 if (!input?.profiles || !Array.isArray(input.profiles) || input.profiles.length === 0) {
     throw new Error("profiles (array) required in INPUT.json or Apify Console.");
 }
