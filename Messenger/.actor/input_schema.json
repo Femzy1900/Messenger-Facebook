@@ -1,0 +1,48 @@
+{
+  "title": "Facebook Messenger Auto Message",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "email": {
+      "title": "Login Email",
+      "type": "string",
+      "description": "Your Facebook login email address",
+      "editor": "textfield"
+    },
+    "password": {
+      "title": "Login Password",
+      "type": "string",
+      "description": "Your Facebook login password",
+      "editor": "textfield",
+      "isSecret": true
+    },
+    "profiles": {
+      "title": "Profiles",
+      "type": "array",
+      "description": "An array of profile objects containing the id and url of each profile to message",
+      "editor": "json",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "title": "Profile ID",
+            "type": "string",
+            "description": "Unique identifier for the profile"
+          },
+          "url": {
+            "title": "Profile URL",
+            "type": "string",
+            "description": "The Facebook profile URL"
+          }
+        }
+      }
+    },
+    "message": {
+      "title": "Message",
+      "type": "string",
+      "editor": "textfield",
+      "description": "The message to send to each profile"
+    }
+  },
+  "required": ["email", "password", "profiles", "message"]
+}

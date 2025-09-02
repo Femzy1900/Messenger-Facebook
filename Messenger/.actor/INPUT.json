@@ -1,0 +1,10 @@
+{
+  "email": "adedokunfemi14@gmail.com",
+  "password": "Adedokun@1900",
+  "message": "Hello from Apify test run!",
+  "profiles": [
+    { "id": "profile-001", "url": "https://www.facebook.com/terri.lopez.9659283" },
+    { "id": "profile-002", "url": "hhttps://www.facebook.com/terri.lopez.9659283" }
+  ]
+}
+ 
